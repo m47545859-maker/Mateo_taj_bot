@@ -4,9 +4,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
-from telegram import Update
-from telegram.ext import Application, MessageHandler, ContextTypes, filters
-
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -14,6 +19,9 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 PORT = int(os.getenv("PORT", "10000"))
 
 MODEL = "openrouter/free"
+
+OWNER_USERNAME = "Maga_unknown"
+OWNER_URL = "https://t.me/Maga_unknown"
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -49,8 +57,8 @@ def ask_ai(question):
                 "content": (
                     "Ту Mateo ҳастӣ, як боти дӯстона дар Telegram. "
                     "Асосан бо забони тоҷикӣ ҷавоб деҳ. "
-                    "Агар корбар бо русӣ нависад, бо русӣ ҷавоб деҳ. "
-                    "Ҷавобҳо бояд кӯтоҳ, табиӣ ва фаҳмо бошанд."
+                    "Агар корбар русӣ нависад, ба русӣ ҷавоб деҳ. "
+                    "Ҷавобҳоро кӯтоҳ, табиӣ ва фаҳмо нигоҳ дор."
                 ),
             },
             {
@@ -74,6 +82,38 @@ def ask_ai(question):
     return result["choices"][0]["message"]["content"]
 
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    text = (
+        "🤖 Салом! Ман Mateo ҳастам.\n\n"
+        "Ман як ёвари зеҳни сунъӣ ҳастам, ки барои "
+        "муошират ва кӯмак ба корбарон сохта шудаам.\n\n"
+        "💬 Ман метавонам ба саволҳо ҷавоб диҳам, "
+        "бо ту суҳбат кунам, матн нависам, тарҷума кунам "
+        "ва ба бисёр масъалаҳо кӯмак расонам.\n\n"
+        "👥 Дар гурӯҳҳо маро бо навиштани "
+        "«Матео» фаъол карда метавонед.\n\n"
+        "👤 Owner: @Maga_unknown\n"
+        "🛠️ Created by: @Maga_unknown"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "👤 Owner — @Maga_unknown",
+                url=OWNER_URL
+            )
+        ]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        text,
+        reply_markup=reply_markup
+    )
+
+
 async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not update.message:
@@ -84,7 +124,6 @@ async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
 
-    # Mateo / Матео
     match = re.search(
         r"(^|\s)(mateo|матео)(\s|$|[,!?])",
         text,
@@ -94,7 +133,6 @@ async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not match:
         return
 
-    # Хориҷ кардани калимаи Mateo
     question = re.sub(
         r"(^|\s)(mateo|матео)(\s*[,!?]?\s*)",
         "",
@@ -104,7 +142,6 @@ async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ).strip()
 
     if not question:
-
         question = (
             "Салом! Худатро кӯтоҳ муаррифӣ кун."
         )
@@ -136,7 +173,6 @@ def main():
             "OPENROUTER_API_KEY ёфт нашуд!"
         )
 
-    # Web server барои Render
     threading.Thread(
         target=run_web_server,
         daemon=True
@@ -146,6 +182,12 @@ def main():
         BOT_TOKEN
     ).build()
 
+    # /start
+    app.add_handler(
+        CommandHandler("start", start)
+    )
+
+    # Mateo / Матео
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,

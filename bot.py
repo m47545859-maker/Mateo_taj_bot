@@ -13,6 +13,7 @@ from telegram.ext import (
     filters,
 )
 
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -84,6 +85,8 @@ def ask_ai(question):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    print("START received!")
+
     text = (
         "🤖 Салом! Ман Mateo ҳастам.\n\n"
         "Ман як ёвари зеҳни сунъӣ ҳастам, ки барои "
@@ -106,11 +109,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     await update.message.reply_text(
         text,
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
@@ -123,6 +124,8 @@ async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text.strip()
+
+    print("MESSAGE received:", text)
 
     match = re.search(
         r"(^|\s)(mateo|матео)(\s|$|[,!?])",
@@ -142,19 +145,21 @@ async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ).strip()
 
     if not question:
-        question = (
-            "Салом! Худатро кӯтоҳ муаррифӣ кун."
-        )
+        question = "Салом! Худатро кӯтоҳ муаррифӣ кун."
 
     try:
 
+        print("Sending question to AI:", question)
+
         answer = ask_ai(question)
+
+        print("AI answer received!")
 
         await update.message.reply_text(answer)
 
     except Exception as e:
 
-        print("AI ERROR:", e)
+        print("AI ERROR:", repr(e))
 
         await update.message.reply_text(
             "Ҳоло бо AI мушкил пайдо шуд 😕"
@@ -163,15 +168,16 @@ async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
 
+    print("========== MATEO STARTING ==========")
+
     if not BOT_TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN ёфт нашуд!"
-        )
+        raise RuntimeError("BOT_TOKEN ёфт нашуд!")
 
     if not OPENROUTER_API_KEY:
-        raise RuntimeError(
-            "OPENROUTER_API_KEY ёфт нашуд!"
-        )
+        raise RuntimeError("OPENROUTER_API_KEY ёфт нашуд!")
+
+    print("BOT_TOKEN: OK")
+    print("OPENROUTER_API_KEY: OK")
 
     threading.Thread(
         target=run_web_server,
@@ -182,12 +188,10 @@ def main():
         BOT_TOKEN
     ).build()
 
-    # /start
     app.add_handler(
         CommandHandler("start", start)
     )
 
-    # Mateo / Матео
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -195,10 +199,5 @@ def main():
         )
     )
 
-    print("Mateo AI фаъол шуд!")
-
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+    print("Handlers installed.")
+    print("

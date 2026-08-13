@@ -3,7 +3,6 @@ import re
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -13,23 +12,33 @@ from telegram.ext import (
     filters,
 )
 
+from database import ANSWERS
+from players import PLAYERS
+from clubs import CLUBS
+
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
 PORT = int(os.getenv("PORT", "10000"))
-
-MODEL = "openrouter/free"
 
 OWNER_USERNAME = "Maga_unknown"
 OWNER_URL = "https://t.me/Maga_unknown"
 
+UNKNOWN_ANSWER = (
+    "Ман ҷавоби саволи шуморо намедонам. "
+    "Шумо метавонед ин саволро аз Owner — @Maga_unknown пурсед."
+)
+
+
+# =========================
+# RENDER HEALTH CHECK
+# =========================
 
 class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Mateo AI is alive!")
+        self.wfile.write(b"Mateo is alive!")
 
     def log_message(self, format, *args):
         pass
@@ -40,76 +49,164 @@ def run_web_server():
     server.serve_forever()
 
 
-def ask_ai(question):
+# =========================
+# TEXT NORMALIZATION
+# =========================
 
-    url = "https://openrouter.ai/api/v1/chat/completions"
+def normalize(text):
+    text = text.lower().strip()
 
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    text = text.replace("ё", "е")
+    text = text.replace("ӣ", "и")
+    text = text.replace("қ", "к")
+    text = text.replace("ғ", "г")
+    text = text.replace("ҳ", "х")
+    text = text.replace("ҷ", "ч")
+    text = text.replace("ӯ", "у")
 
-    data = {
-        "model": MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Ман Mateo ҳастам — як ёвари зеҳни сунъии дӯстона дар Telegram.\n\n"
+    text = re.sub(r"[!?.,:;\"'«»()\-–—]", " ", text)
+    text = re.sub(r"\s+", " ", text)
 
-                    "ҚОИДАИ АСОСИИ ЗАБОН:\n"
-                    "1. Забони асосии ту — ТОҶИКӢ аст.\n"
-                    "2. Агар корбар ба забони тоҷикӣ нависад, танҳо бо забони тоҷикӣ ҷавоб деҳ.\n"
-                    "3. Агар корбар ба забони русӣ нависад, бо забони русӣ ҷавоб деҳ.\n"
-                    "4. Забони тоҷикиро бо русӣ омехта накун, агар зарурат набошад.\n"
-                    "5. Агар корбар ба забони англисӣ ё дигар забон нависад, "
-                    "асосан ба тоҷикӣ ҷавоб деҳ, магар агар ӯ махсус талаб кунад, "
-                    "ки ба ҳамон забон ҷавоб диҳӣ.\n\n"
+    return text.strip()
 
-                    "ТОҶИКИИ ДУРУСТ:\n"
-                    "Аз забони адабии тоҷикӣ ва алифбои кириллӣ истифода бар. "
-                    "Кӯшиш кун калимаҳои русӣ, узбекӣ ё форсии Эронро ҳеҷгоҳ истифода набари. "
-                    "Ҷумлаҳо табиӣ, равон ва фаҳмо бошанд.\n\n"
 
-                    "РАФТОР:\n"
-                    "Бо корбар дӯстона ва эҳтиромона суҳбат кун. "
-                    "Ҷавобҳоро мувофиқи савол кӯтоҳ ва равшан навис. "
-                    "Агар савол мураккаб бошад, онро қадам ба қадам фаҳмон.\n\n"
+# =========================
+# CHECK MATEO PREFIX
+# =========================
 
-                    "МАЪЛУМОТИ НОДУРУСТ:\n"
-                    "Ҳеҷ гоҳ маълумотро аз худат насоз. "
-                    "Агар ҷавобро аниқ надонӣ, рост бигӯ, ки маълумоти кофӣ надорӣ. "
-                    "Хусусан дар бораи натиҷаҳои зиндаи футбол, бозиҳои имрӯз "
-                    "ва хабарҳои нав маълумоти тахминӣ ҳамчун ҳақиқат пешниҳод накун.\n\n"
+def remove_mateo_prefix(text):
 
-                    "Ту Mateo ҳастӣ ва ҳамеша кӯшиш мекунӣ, ки ба корбар "
-                    "ҷавоби фаҳмо, муфид ва бо забони дуруст диҳӣ."
-                ),
-            },
-            {
-                "role": "user",
-                "content": question,
-            },
-        ],
-    }
+    original = text.strip()
 
-    response = requests.post(
-        url,
-        headers=headers,
-        json=data,
-        timeout=60,
+    pattern = r"^(матео|mateo)(?:\s*[,!:.\-]?\s*)(.*)$"
+
+    match = re.match(
+        pattern,
+        original,
+        flags=re.IGNORECASE
     )
 
-    response.raise_for_status()
+    if not match:
+        return None
 
-    result = response.json()
+    question = match.group(2).strip()
 
-    return result["choices"][0]["message"]["content"]
+    return question
 
+
+# =========================
+# FIND NORMAL ANSWER
+# =========================
+
+def find_answer(question):
+
+    q = normalize(question)
+
+    if q in ANSWERS:
+        return ANSWERS[q]
+
+    # partial matching
+    for key, answer in ANSWERS.items():
+
+        normalized_key = normalize(key)
+
+        if q == normalized_key:
+            return answer
+
+    return None
+
+
+# =========================
+# FIND PLAYER
+# =========================
+
+def find_player(question):
+
+    q = normalize(question)
+
+    for key, player in PLAYERS.items():
+
+        key_normalized = normalize(key)
+
+        if key_normalized in q:
+
+            return player
+
+    return None
+
+
+# =========================
+# FIND CLUB
+# =========================
+
+def find_club(question):
+
+    q = normalize(question)
+
+    for key, club in CLUBS.items():
+
+        key_normalized = normalize(key)
+
+        if key_normalized in q:
+
+            return club
+
+    return None
+
+
+# =========================
+# PLAYER ANSWER
+# =========================
+
+def player_answer(player, question):
+
+    q = normalize(question)
+
+    name = player["name"]
+    club = player["club"]
+    league = player["league"]
+    country = player["country"]
+    position = player["position"]
+
+    if "кадом даста" in q or "кадом клуб" in q:
+        return f"{name} дар клуби {club} бозӣ мекунад. ⚽"
+
+    if "кадом лига" in q:
+        return f"{name} дар {league} бозӣ мекунад. ⚽"
+
+    if "кадом кишвар" in q or "аз кадом кишвар" in q:
+        return f"{name} аз {country} мебошад. 🌍"
+
+    if "позиция" in q or "позитсия" in q:
+        return f"Позицияи {name} — {position}. ⚽"
+
+    return (
+        f"👤 {name}\n\n"
+        f"🏟 Клуб: {club}\n"
+        f"🏆 Лига: {league}\n"
+        f"🌍 Миллат: {country}\n"
+        f"⚽ Позиция: {position}"
+    )
+
+
+# =========================
+# CLUB ANSWER
+# =========================
+
+def club_answer(club):
+
+    return (
+        f"🏟 {club['name']}\n\n"
+        f"🏆 Лига: {club['league']}\n"
+        f"🌍 Кишвар: {club['country']}"
+    )
+
+
+# =========================
+# /START
+# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    print("START received!")
 
     text = (
         "🤖 Салом! Ман Mateo ҳастам.\n\n"
@@ -139,7 +236,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# MATEO MESSAGE
+# =========================
+
+async def mateo_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message:
         return
@@ -149,68 +253,71 @@ async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
 
-    print("MESSAGE received:", text)
+    # IMPORTANT:
+    # If message does NOT start with Mateo/Mateo -> SILENCE
 
-    match = re.search(
-        r"(^|\s)(mateo|матео)(\s|$|[,!?])",
-        text,
-        re.IGNORECASE,
-    )
+    question = remove_mateo_prefix(text)
 
-    if not match:
+    if question is None:
         return
 
-    question = re.sub(
-        r"(^|\s)(mateo|матео)(\s*[,!?]?\s*)",
-        "",
-        text,
-        count=1,
-        flags=re.IGNORECASE,
-    ).strip()
-
     if not question:
-        question = "Салом! Худатро кӯтоҳ муаррифӣ кун."
-
-    try:
-
-        print("Sending question to AI:", question)
-
-        answer = ask_ai(question)
-
-        print("AI answer received!")
-
-        await update.message.reply_text(answer)
-
-    except Exception as e:
-
-        print("AI ERROR:", repr(e))
-
         await update.message.reply_text(
-            "Ҳоло бо AI мушкил пайдо шуд 😕"
+            "Бале? 🤖 Саволатонро нависед."
         )
+        return
 
+    # 1. Normal predefined answers
+    answer = find_answer(question)
+
+    if answer:
+        await update.message.reply_text(answer)
+        return
+
+    # 2. Player database
+    player = find_player(question)
+
+    if player:
+        answer = player_answer(player, question)
+        await update.message.reply_text(answer)
+        return
+
+    # 3. Club database
+    club = find_club(question)
+
+    if club:
+        answer = club_answer(club)
+        await update.message.reply_text(answer)
+        return
+
+    # 4. Unknown
+    await update.message.reply_text(
+        UNKNOWN_ANSWER
+    )
+
+
+# =========================
+# MAIN
+# =========================
 
 def main():
 
-    print("========== MATEO STARTING ==========")
-
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN ёфт нашуд!")
-
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY ёфт нашуд!")
-
-    print("BOT_TOKEN: OK")
-    print("OPENROUTER_API_KEY: OK")
+        raise RuntimeError(
+            "BOT_TOKEN ёфт нашуд!"
+        )
 
     threading.Thread(
         target=run_web_server,
         daemon=True
     ).start()
 
-    app = Application.builder().token(
-        BOT_TOKEN
-    ).build()
+    app = (
+        Application
+        .builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
 
     app.add_handler(
         CommandHandler("start", start)
@@ -219,15 +326,17 @@ def main():
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            mateo_reply
+            mateo_message
         )
     )
 
-    print("Handlers installed.")
-    print("Starting Telegram polling...")
+    print("Mateo is starting...")
+    print("AI: OFF")
+    print("Database: ON")
+    print("Mateo prefix required: ON")
 
     app.run_polling(
-        drop_pending_updates=False
+        drop_pending_updates=True
     )
 
 

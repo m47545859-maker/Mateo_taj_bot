@@ -7,18 +7,21 @@ import requests
 from telegram import Update
 from telegram.ext import Application, MessageHandler, ContextTypes, filters
 
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
 PORT = int(os.getenv("PORT", "10000"))
 
 MODEL = "openrouter/free"
 
 
 class HealthHandler(BaseHTTPRequestHandler):
+
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Mateo is alive!")
+        self.wfile.write(b"Mateo AI is alive!")
 
     def log_message(self, format, *args):
         pass
@@ -30,6 +33,7 @@ def run_web_server():
 
 
 def ask_ai(question):
+
     url = "https://openrouter.ai/api/v1/chat/completions"
 
     headers = {
@@ -44,9 +48,9 @@ def ask_ai(question):
                 "role": "system",
                 "content": (
                     "Ту Mateo ҳастӣ, як боти дӯстона дар Telegram. "
-                    "Ба корбарон асосан бо забони тоҷикӣ ҷавоб деҳ. "
-                    "Агар корбар русӣ нависад, ба русӣ ҷавоб деҳ. "
-                    "Ҷавобҳоро кӯтоҳ, табиӣ ва фаҳмо нигоҳ дор."
+                    "Асосан бо забони тоҷикӣ ҷавоб деҳ. "
+                    "Агар корбар бо русӣ нависад, бо русӣ ҷавоб деҳ. "
+                    "Ҷавобҳо бояд кӯтоҳ, табиӣ ва фаҳмо бошанд."
                 ),
             },
             {
@@ -66,15 +70,21 @@ def ask_ai(question):
     response.raise_for_status()
 
     result = response.json()
+
     return result["choices"][0]["message"]["content"]
 
 
 async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+
+    if not update.message:
+        return
+
+    if not update.message.text:
         return
 
     text = update.message.text.strip()
 
+    # Mateo / Матео
     match = re.search(
         r"(^|\s)(mateo|матео)(\s|$|[,!?])",
         text,
@@ -84,6 +94,7 @@ async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not match:
         return
 
+    # Хориҷ кардани калимаи Mateo
     question = re.sub(
         r"(^|\s)(mateo|матео)(\s*[,!?]?\s*)",
         "",
@@ -93,32 +104,47 @@ async def mateo_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ).strip()
 
     if not question:
-        question = "Салом! Бо ман шинос шав ва худро кӯтоҳ муаррифӣ кун."
+
+        question = (
+            "Салом! Худатро кӯтоҳ муаррифӣ кун."
+        )
 
     try:
+
         answer = ask_ai(question)
+
         await update.message.reply_text(answer)
 
     except Exception as e:
+
         print("AI ERROR:", e)
+
         await update.message.reply_text(
-            "Ҳоло бо AI мушкил пайдо шуд 😕 Баъдтар боз кӯшиш кун."
+            "Ҳоло бо AI мушкил пайдо шуд 😕"
         )
 
 
 def main():
+
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN ёфт нашуд!")
+        raise RuntimeError(
+            "BOT_TOKEN ёфт нашуд!"
+        )
 
     if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY ёфт нашуд!")
+        raise RuntimeError(
+            "OPENROUTER_API_KEY ёфт нашуд!"
+        )
 
+    # Web server барои Render
     threading.Thread(
         target=run_web_server,
         daemon=True
     ).start()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(
+        BOT_TOKEN
+    ).build()
 
     app.add_handler(
         MessageHandler(
@@ -127,7 +153,7 @@ def main():
         )
     )
 
-    print("Mateo AI фаъол шуд...")
+    print("Mateo AI фаъол шуд!")
 
     app.run_polling()
 

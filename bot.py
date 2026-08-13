@@ -1,11 +1,8 @@
 import os
-import re
-import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import requests
-
+from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -21,59 +18,66 @@ from telegram.ext import (
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-AI_API_KEY = os.getenv("AI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 PORT = int(os.getenv("PORT", "10000"))
 
 OWNER = "@Maga_unknown"
 OWNER_URL = "https://t.me/Maga_unknown"
 
-# OpenAI-compatible API
-AI_URL = "https://api.openai.com/v1/chat/completions"
-
-# Модели метавонанд иваз шаванд.
-AI_MODEL = os.getenv("AI_MODEL", "gpt-5-mini")
+# Free-tier compatible Flash model
+GEMINI_MODEL = os.getenv(
+    "GEMINI_MODEL",
+    "gemini-2.5-flash"
+)
 
 
 # =========================================================
-# MATEO PERSONALITY
+# GEMINI
 # =========================================================
+
+if GEMINI_API_KEY:
+    gemini_client = genai.Client(
+        api_key=GEMINI_API_KEY
+    )
+else:
+    gemini_client = None
+
 
 SYSTEM_PROMPT = """
-Ту Mateo ҳастӣ.
-
-Ту як ёвари дӯстона, хушмуомила ва табиии тоҷикзабон ҳастӣ.
+Ту Mateo ҳастӣ — боти дӯстона ва табиии тоҷикзабон.
 
 ҚОИДАҲО:
 
-1. Забони асосии ту ТОҶИКӢ аст.
+1. Забони асосии ту тоҷикӣ аст.
 2. Агар корбар ба русӣ нависад, ба русӣ ҷавоб деҳ.
-3. Ба забонҳои дигар ҷавоб надеҳ.
-4. Агар корбар ба забони ғайр аз тоҷикӣ ё русӣ нависад, кӯтоҳ бигӯ:
+3. Ба дигар забонҳо ҷавоб надеҳ.
+4. Агар матн ба забони ғайр аз тоҷикӣ ё русӣ бошад, бигӯ:
    "Ман танҳо забони тоҷикӣ ва русиро мефаҳмам."
 
 5. Бо корбар озодона суҳбат кун.
-6. Ҷавобҳо бояд табиӣ бошанд, мисли суҳбати одии инсон.
-7. Ҳар саволро танҳо бо ҷавоби кӯтоҳи якхела маҳдуд накун.
-8. Агар корбар шӯхӣ кунад, муносиб ҷавоб деҳ.
-9. Агар корбар салом кунад, салом кун.
-10. Агар корбар дар бораи футбол пурсад, ба мавзӯи футбол муносиб ҷавоб деҳ.
-11. Агар маълумоти дақиқро надонӣ, рост бигӯ, ки намедонӣ.
-12. Ҳеҷ гоҳ нагӯ, ки ту ChatGPT ҳастӣ.
-13. Номи ту Mateo аст.
-14. Owner-и ту @Maga_unknown мебошад.
-15. Ту бояд худро ҳамчун Mateo муаррифӣ кун.
+6. Ҷавобҳо бояд табиӣ ва дӯстона бошанд.
+7. Агар корбар салом кунад, салом кун.
+8. Агар шӯхӣ кунад, муносиб ҷавоб деҳ.
+9. Агар саволро надонӣ, маълумоти сохта насоз.
+10. Номи ту Mateo аст.
+11. Owner-и ту @Maga_unknown мебошад.
+12. Нагӯ, ки ту ChatGPT ҳастӣ.
 
 ФУТБОЛ:
 
-Агар корбар дар бораи Манчестер Сити пурсад:
-- ту мухлиси Манчестер Сити ҳастӣ.
-- Метавонӣ дар бораи футбол, клубҳо, бозигарон ва мураббиён суҳбат кунӣ.
+Ту дар бораи футбол, клубҳо, бозигарон ва мураббиён
+метавонӣ суҳбат кунӣ.
 
-Агар маълумоти футболӣ талаб карда шавад ва ту итминон надошта бошӣ,
-маълумоти сохта надиҳ.
+Дастаи дӯстдоштаи ту:
+Манчестер Сити.
 
-Ҷавобҳо табиӣ, дӯстона ва асосан ба забони тоҷикӣ бошанд.
+Агар пурсанд:
+"Мухлиси кадом дастаӣ?"
+ҷавоб деҳ:
+"Ман мухлиси дастаи шоҳона, яъне Манчестер Сити ҳастам. 💙⚽"
+
+Ҷавобҳо асосан тоҷикӣ бошанд.
 """
 
 
@@ -81,177 +85,114 @@ SYSTEM_PROMPT = """
 # MEMORY
 # =========================================================
 
-user_memory = {}
+memory = {}
 
-MAX_MEMORY_MESSAGES = 12
+MAX_MESSAGES = 12
 
 
 def get_memory(user_id):
 
-    if user_id not in user_memory:
-        user_memory[user_id] = []
+    if user_id not in memory:
+        memory[user_id] = []
 
-    return user_memory[user_id]
+    return memory[user_id]
 
 
-def add_memory(user_id, role, content):
+def save_message(user_id, role, text):
 
-    memory = get_memory(user_id)
+    history = get_memory(user_id)
 
-    memory.append({
+    history.append({
         "role": role,
-        "content": content
+        "text": text
     })
 
-    if len(memory) > MAX_MEMORY_MESSAGES:
-        del memory[:-MAX_MEMORY_MESSAGES]
+    if len(history) > MAX_MESSAGES:
+        memory[user_id] = history[-MAX_MESSAGES:]
 
 
 # =========================================================
-# LANGUAGE CHECK
-# =========================================================
-
-def contains_cyrillic(text):
-
-    return bool(
-        re.search(
-            r"[А-Яа-яЁёА-Яа-яӢӣҚқҒғҲҳҶҷӮӯ]",
-            text
-        )
-    )
-
-
-def looks_english(text):
-
-    english_words = [
-        "the",
-        "what",
-        "who",
-        "how",
-        "why",
-        "where",
-        "when",
-        "hello",
-        "hi",
-        "please",
-        "thanks",
-        "football",
-        "city",
-        "player",
-        "team",
-        "you",
-        "are",
-        "is",
-        "can",
-        "do",
-    ]
-
-    words = re.findall(
-        r"[A-Za-z]+",
-        text.lower()
-    )
-
-    if not words:
-        return False
-
-    matches = sum(
-        1 for word in words
-        if word in english_words
-    )
-
-    return matches >= 1
-
-
-# =========================================================
-# FIND MATEO
+# MATEO NAME CHECK
 # =========================================================
 
 def has_mateo(text):
 
-    normalized = text.lower()
+    text = text.lower()
 
-    normalized = normalized.replace(
-        "ё",
-        "е"
+    return (
+        "матео" in text
+        or "mateo" in text
     )
-
-    # Mateo / Матео дар ҳар ҷои паём
-    patterns = [
-        r"\bматео\b",
-        r"\bmateo\b",
-    ]
-
-    for pattern in patterns:
-
-        if re.search(
-            pattern,
-            normalized,
-            flags=re.IGNORECASE
-        ):
-            return True
-
-    return False
 
 
 def remove_mateo(text):
 
-    text = re.sub(
-        r"\bматео\b",
-        "",
-        text,
-        flags=re.IGNORECASE
+    text = text.replace(
+        "Матео",
+        ""
     )
 
-    text = re.sub(
-        r"\bmateo\b",
-        "",
-        text,
-        flags=re.IGNORECASE
+    text = text.replace(
+        "матео",
+        ""
     )
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
+    text = text.replace(
+        "МАТЕО",
+        ""
     )
 
-    return text.strip()
+    text = text.replace(
+        "Mateo",
+        ""
+    )
+
+    text = text.replace(
+        "mateo",
+        ""
+    )
+
+    text = text.replace(
+        "MATEO",
+        ""
+    )
+
+    return " ".join(
+        text.split()
+    ).strip()
 
 
 # =========================================================
-# SPECIAL MATEO ANSWERS
+# SPECIAL ANSWERS
 # =========================================================
 
 def special_answer(question):
 
     q = question.lower()
 
-    # punctuation
-    q = re.sub(
-        r"[?!.,:;]+",
-        " ",
-        q
+    # Removes punctuation mentally
+    q = (
+        q.replace("?", "")
+         .replace("!", "")
+         .replace(",", "")
+         .replace(".", "")
+         .replace(":", "")
     )
 
-    q = re.sub(
-        r"\s+",
-        " ",
-        q
-    ).strip()
+    q = " ".join(q.split())
 
-    # FAN
-    fan_questions = [
+    fan_phrases = [
         "мухлиси кадом дастаи",
         "мухлиси кадом дастаи хасти",
         "ту мухлиси кадом дастаи",
         "ту мухлиси кадом дастаи хасти",
+        "дастаи дустдоштаи ту",
         "кадом даста ба ту маъкул аст",
-        "дастаи дустдоштаи ту кадом аст",
     ]
 
-    for item in fan_questions:
+    for phrase in fan_phrases:
 
-        if item in q:
+        if phrase in q:
 
             return (
                 "Ман мухлиси дастаи шоҳона, "
@@ -262,81 +203,89 @@ def special_answer(question):
 
 
 # =========================================================
-# AI REQUEST
+# LANGUAGE CHECK
 # =========================================================
 
-def ask_ai(user_id, question):
+def is_cyrillic(text):
 
-    if not AI_API_KEY:
+    for char in text:
+
+        if (
+            "А" <= char <= "я"
+            or char in "ЁёӢӣҚқҒғҲҳҶҷӮӯ"
+        ):
+            return True
+
+    return False
+
+
+def contains_latin(text):
+
+    return any(
+        "a" <= char.lower() <= "z"
+        for char in text
+    )
+
+
+# =========================================================
+# GEMINI CHAT
+# =========================================================
+
+def ask_gemini(user_id, question):
+
+    if not gemini_client:
+
         return (
-            "AI API фаъол нест. "
-            "Owner бояд AI_API_KEY-ро дар Render гузорад."
+            "Gemini API фаъол нест.\n\n"
+            "Дар Render → Environment "
+            "GEMINI_API_KEY-ро гузоред."
         )
 
-    memory = get_memory(user_id)
+    history = get_memory(user_id)
 
-    messages = [
-        {
-            "role": "system",
-            "content": SYSTEM_PROMPT
-        }
-    ]
+    conversation = SYSTEM_PROMPT + "\n\n"
 
-    messages.extend(memory)
+    for item in history:
 
-    messages.append({
-        "role": "user",
-        "content": question
-    })
+        if item["role"] == "user":
 
-    headers = {
-        "Authorization": f"Bearer {AI_API_KEY}",
-        "Content-Type": "application/json"
-    }
+            conversation += (
+                "Корбар: "
+                + item["text"]
+                + "\n"
+            )
 
-    payload = {
-        "model": AI_MODEL,
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 600
-    }
+        else:
+
+            conversation += (
+                "Mateo: "
+                + item["text"]
+                + "\n"
+            )
+
+    conversation += (
+        "Корбар: "
+        + question
+        + "\n"
+        "Mateo:"
+    )
 
     try:
 
-        response = requests.post(
-            AI_URL,
-            headers=headers,
-            json=payload,
-            timeout=60
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=conversation
         )
 
-        if response.status_code != 200:
+        answer = response.text.strip()
 
-            print(
-                "AI ERROR:",
-                response.status_code,
-                response.text
-            )
-
-            return (
-                "Ҳоло дар пайвастшавӣ ба AI мушкил пайдо шуд. "
-                "Каме баъдтар кӯшиш кунед."
-            )
-
-        data = response.json()
-
-        answer = (
-            data["choices"][0]["message"]["content"]
-            .strip()
-        )
-
-        add_memory(
+        save_message(
             user_id,
             "user",
             question
         )
 
-        add_memory(
+        save_message(
             user_id,
             "assistant",
             answer
@@ -344,11 +293,11 @@ def ask_ai(user_id, question):
 
         return answer
 
-    except Exception as e:
+    except Exception as error:
 
         print(
-            "AI EXCEPTION:",
-            repr(e)
+            "GEMINI ERROR:",
+            repr(error)
         )
 
         return (
@@ -375,20 +324,14 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         self.wfile.write(
-            "Mateo is alive! 🤖".encode(
-                "utf-8"
-            )
+            "Mateo is alive! 🤖".encode("utf-8")
         )
 
-    def log_message(
-        self,
-        format,
-        *args
-    ):
+    def log_message(self, format, *args):
         pass
 
 
-def run_web_server():
+def run_server():
 
     server = HTTPServer(
         ("0.0.0.0", PORT),
@@ -396,14 +339,14 @@ def run_web_server():
     )
 
     print(
-        f"Web server started on port {PORT}"
+        "Render web server started"
     )
 
     server.serve_forever()
 
 
 # =========================================================
-# START
+# START COMMAND
 # =========================================================
 
 async def start(
@@ -418,9 +361,9 @@ async def start(
         "ва ба саволҳои шумо ҷавоб диҳам.\n\n"
         "💬 Дар суҳбат маро бо номи "
         "«Матео» ё «Mateo» даъват кунед.\n\n"
-        "⚽ Ман инчунин ба мавзӯъҳои футбол, "
-        "бозигарон, клубҳо ва дигар масъалаҳо "
-        "суҳбат карда метавонам.\n\n"
+        "⚽ Ман инчунин метавонам дар бораи "
+        "футбол, бозигарон, клубҳо ва дигар "
+        "мавзӯъҳо суҳбат кунам.\n\n"
         "🇹🇯 Забони асосӣ: тоҷикӣ\n"
         "🇷🇺 Русӣ низ дастгирӣ мешавад.\n\n"
         "👤 Owner: @Maga_unknown\n"
@@ -445,7 +388,7 @@ async def start(
 
 
 # =========================================================
-# MESSAGE HANDLER
+# MESSAGE
 # =========================================================
 
 async def handle_message(
@@ -456,22 +399,19 @@ async def handle_message(
     if not update.message:
         return
 
-    if not update.message.text:
+    text = update.message.text
+
+    if not text:
         return
 
-    text = update.message.text.strip()
-
-    # =====================================================
-    # IMPORTANT:
-    # Mateo must be anywhere in the message.
-    # If no Mateo -> absolutely no response.
-    # =====================================================
-
+    # Mateo MUST be somewhere in message
     if not has_mateo(text):
+
         return
 
     question = remove_mateo(text)
 
+    # Just "Mateo"
     if not question:
 
         await update.message.reply_text(
@@ -480,24 +420,10 @@ async def handle_message(
 
         return
 
-    # =====================================================
-    # LANGUAGE
-    # =====================================================
-
-    # Агар матн лотинӣ бошад ва ба англисӣ монанд бошад
-    if looks_english(question) and not contains_cyrillic(question):
-
-        await update.message.reply_text(
-            "Ман танҳо забони тоҷикӣ ва русиро мефаҳмам. 🇹🇯🇷🇺"
-        )
-
-        return
-
-    # =====================================================
-    # SPECIAL ANSWERS
-    # =====================================================
-
-    special = special_answer(question)
+    # Special fixed answers
+    special = special_answer(
+        question
+    )
 
     if special:
 
@@ -507,13 +433,10 @@ async def handle_message(
 
         return
 
-    # =====================================================
     # AI
-    # =====================================================
-
     user_id = update.effective_user.id
 
-    answer = ask_ai(
+    answer = ask_gemini(
         user_id,
         question
     )
@@ -532,20 +455,17 @@ def main():
     if not BOT_TOKEN:
 
         raise RuntimeError(
-            "BOT_TOKEN ёфт нашуд! "
-            "Дар Render → Environment → "
-            "BOT_TOKEN гузоред."
+            "BOT_TOKEN ёфт нашуд!"
         )
 
-    if not AI_API_KEY:
+    if not GEMINI_API_KEY:
 
         print(
-            "WARNING: AI_API_KEY ёфт нашуд."
+            "WARNING: GEMINI_API_KEY ёфт нашуд!"
         )
 
-    # Render web server
     threading.Thread(
-        target=run_web_server,
+        target=run_server,
         daemon=True
     ).start()
 
@@ -579,7 +499,7 @@ def main():
     )
 
     print(
-        "FREE CHAT: ON"
+        "GEMINI AI: ON"
     )
 
     print(
@@ -591,11 +511,7 @@ def main():
     )
 
     print(
-        "OTHER LANGUAGES: OFF"
-    )
-
-    print(
-        "MATEO NAME REQUIRED: ON"
+        "MATEO ANYWHERE IN MESSAGE: ON"
     )
 
     print(

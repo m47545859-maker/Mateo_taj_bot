@@ -328,4 +328,4 @@ async def mateo_message(
     text = update.message.text.strip()
 
     # Mateo MUST be at the beginning
-    question = remove_mateo_prefix(text
+    question = remove_mateo_prefix(text)

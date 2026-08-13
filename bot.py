@@ -1,7 +1,10 @@
 import os
 import re
+import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import requests
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,232 +15,414 @@ from telegram.ext import (
     filters,
 )
 
-from data import ANSWERS, PLAYERS, CLUBS
 
+# =========================================================
+# SETTINGS
+# =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+AI_API_KEY = os.getenv("AI_API_KEY")
+
 PORT = int(os.getenv("PORT", "10000"))
 
 OWNER = "@Maga_unknown"
 OWNER_URL = "https://t.me/Maga_unknown"
 
+# OpenAI-compatible API
+AI_URL = "https://api.openai.com/v1/chat/completions"
 
-UNKNOWN_ANSWER = (
-    "Ман ҷавоби саволи шуморо намедонам.\n\n"
-    "Шумо метавонед ин саволро аз Owner — @Maga_unknown пурсед."
-)
-
-
-# =========================
-# RENDER
-# =========================
-
-class HealthHandler(BaseHTTPRequestHandler):
-
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Mateo is alive!")
-
-    def log_message(self, format, *args):
-        pass
+# Модели метавонанд иваз шаванд.
+AI_MODEL = os.getenv("AI_MODEL", "gpt-5-mini")
 
 
-def run_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    server.serve_forever()
+# =========================================================
+# MATEO PERSONALITY
+# =========================================================
+
+SYSTEM_PROMPT = """
+Ту Mateo ҳастӣ.
+
+Ту як ёвари дӯстона, хушмуомила ва табиии тоҷикзабон ҳастӣ.
+
+ҚОИДАҲО:
+
+1. Забони асосии ту ТОҶИКӢ аст.
+2. Агар корбар ба русӣ нависад, ба русӣ ҷавоб деҳ.
+3. Ба забонҳои дигар ҷавоб надеҳ.
+4. Агар корбар ба забони ғайр аз тоҷикӣ ё русӣ нависад, кӯтоҳ бигӯ:
+   "Ман танҳо забони тоҷикӣ ва русиро мефаҳмам."
+
+5. Бо корбар озодона суҳбат кун.
+6. Ҷавобҳо бояд табиӣ бошанд, мисли суҳбати одии инсон.
+7. Ҳар саволро танҳо бо ҷавоби кӯтоҳи якхела маҳдуд накун.
+8. Агар корбар шӯхӣ кунад, муносиб ҷавоб деҳ.
+9. Агар корбар салом кунад, салом кун.
+10. Агар корбар дар бораи футбол пурсад, ба мавзӯи футбол муносиб ҷавоб деҳ.
+11. Агар маълумоти дақиқро надонӣ, рост бигӯ, ки намедонӣ.
+12. Ҳеҷ гоҳ нагӯ, ки ту ChatGPT ҳастӣ.
+13. Номи ту Mateo аст.
+14. Owner-и ту @Maga_unknown мебошад.
+15. Ту бояд худро ҳамчун Mateo муаррифӣ кун.
+
+ФУТБОЛ:
+
+Агар корбар дар бораи Манчестер Сити пурсад:
+- ту мухлиси Манчестер Сити ҳастӣ.
+- Метавонӣ дар бораи футбол, клубҳо, бозигарон ва мураббиён суҳбат кунӣ.
+
+Агар маълумоти футболӣ талаб карда шавад ва ту итминон надошта бошӣ,
+маълумоти сохта надиҳ.
+
+Ҷавобҳо табиӣ, дӯстона ва асосан ба забони тоҷикӣ бошанд.
+"""
 
 
-# =========================
-# NORMALIZE
-# =========================
+# =========================================================
+# MEMORY
+# =========================================================
 
-def normalize(text):
-    text = text.lower().strip()
+user_memory = {}
 
-    replacements = {
-        "ё": "е",
-        "ӣ": "и",
-        "қ": "к",
-        "ғ": "г",
-        "ҳ": "х",
-        "ҷ": "ч",
-        "ӯ": "у",
-    }
-
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-
-    # Ҳамаи аломатҳо нест мешаванд
-    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
-
-    # Фосилаҳои зиёдатӣ нест мешаванд
-    text = re.sub(r"\s+", " ", text)
-
-    return text.strip()
+MAX_MEMORY_MESSAGES = 12
 
 
-# =========================
-# MATEO MUST BE FIRST
-# =========================
+def get_memory(user_id):
 
-def get_question(text):
+    if user_id not in user_memory:
+        user_memory[user_id] = []
 
-    text = text.strip()
+    return user_memory[user_id]
 
-    # Танҳо агар Mateo/Матео дар аввал бошад
-    match = re.match(
-        r"^(матео|mateo)\b",
+
+def add_memory(user_id, role, content):
+
+    memory = get_memory(user_id)
+
+    memory.append({
+        "role": role,
+        "content": content
+    })
+
+    if len(memory) > MAX_MEMORY_MESSAGES:
+        del memory[:-MAX_MEMORY_MESSAGES]
+
+
+# =========================================================
+# LANGUAGE CHECK
+# =========================================================
+
+def contains_cyrillic(text):
+
+    return bool(
+        re.search(
+            r"[А-Яа-яЁёА-Яа-яӢӣҚқҒғҲҳҶҷӮӯ]",
+            text
+        )
+    )
+
+
+def looks_english(text):
+
+    english_words = [
+        "the",
+        "what",
+        "who",
+        "how",
+        "why",
+        "where",
+        "when",
+        "hello",
+        "hi",
+        "please",
+        "thanks",
+        "football",
+        "city",
+        "player",
+        "team",
+        "you",
+        "are",
+        "is",
+        "can",
+        "do",
+    ]
+
+    words = re.findall(
+        r"[A-Za-z]+",
+        text.lower()
+    )
+
+    if not words:
+        return False
+
+    matches = sum(
+        1 for word in words
+        if word in english_words
+    )
+
+    return matches >= 1
+
+
+# =========================================================
+# FIND MATEO
+# =========================================================
+
+def has_mateo(text):
+
+    normalized = text.lower()
+
+    normalized = normalized.replace(
+        "ё",
+        "е"
+    )
+
+    # Mateo / Матео дар ҳар ҷои паём
+    patterns = [
+        r"\bматео\b",
+        r"\bmateo\b",
+    ]
+
+    for pattern in patterns:
+
+        if re.search(
+            pattern,
+            normalized,
+            flags=re.IGNORECASE
+        ):
+            return True
+
+    return False
+
+
+def remove_mateo(text):
+
+    text = re.sub(
+        r"\bматео\b",
+        "",
         text,
         flags=re.IGNORECASE
     )
 
-    if not match:
-        return None
+    text = re.sub(
+        r"\bmateo\b",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
 
-    question = text[match.end():].strip()
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
 
-    return question
+    return text.strip()
 
 
-# =========================
-# ANSWER FROM DATABASE
-# =========================
+# =========================================================
+# SPECIAL MATEO ANSWERS
+# =========================================================
 
-def find_answer(question):
+def special_answer(question):
 
-    q = normalize(question)
+    q = question.lower()
 
-    if not q:
-        return None
+    # punctuation
+    q = re.sub(
+        r"[?!.,:;]+",
+        " ",
+        q
+    )
 
-    # Аввал ҷавоби аниқ
-    if q in ANSWERS:
-        return ANSWERS[q]
+    q = re.sub(
+        r"\s+",
+        " ",
+        q
+    ).strip()
 
-    # Баъд муқоисаи normalizeшуда
-    for key, answer in ANSWERS.items():
+    # FAN
+    fan_questions = [
+        "мухлиси кадом дастаи",
+        "мухлиси кадом дастаи хасти",
+        "ту мухлиси кадом дастаи",
+        "ту мухлиси кадом дастаи хасти",
+        "кадом даста ба ту маъкул аст",
+        "дастаи дустдоштаи ту кадом аст",
+    ]
 
-        if normalize(key) == q:
-            return answer
+    for item in fan_questions:
+
+        if item in q:
+
+            return (
+                "Ман мухлиси дастаи шоҳона, "
+                "яъне Манчестер Сити ҳастам. 💙⚽"
+            )
 
     return None
 
 
-# =========================
-# PLAYER
-# =========================
+# =========================================================
+# AI REQUEST
+# =========================================================
 
-def find_player(question):
+def ask_ai(user_id, question):
 
-    q = normalize(question)
+    if not AI_API_KEY:
+        return (
+            "AI API фаъол нест. "
+            "Owner бояд AI_API_KEY-ро дар Render гузорад."
+        )
 
-    # Номи дарозтар аввал санҷида мешавад
-    players = sorted(
-        PLAYERS.items(),
-        key=lambda x: len(normalize(x[0])),
-        reverse=True
-    )
+    memory = get_memory(user_id)
 
-    for key, player in players:
+    messages = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT
+        }
+    ]
 
-        if normalize(key) in q:
-            return player
+    messages.extend(memory)
 
-    return None
+    messages.append({
+        "role": "user",
+        "content": question
+    })
+
+    headers = {
+        "Authorization": f"Bearer {AI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": AI_MODEL,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 600
+    }
+
+    try:
+
+        response = requests.post(
+            AI_URL,
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+
+        if response.status_code != 200:
+
+            print(
+                "AI ERROR:",
+                response.status_code,
+                response.text
+            )
+
+            return (
+                "Ҳоло дар пайвастшавӣ ба AI мушкил пайдо шуд. "
+                "Каме баъдтар кӯшиш кунед."
+            )
+
+        data = response.json()
+
+        answer = (
+            data["choices"][0]["message"]["content"]
+            .strip()
+        )
+
+        add_memory(
+            user_id,
+            "user",
+            question
+        )
+
+        add_memory(
+            user_id,
+            "assistant",
+            answer
+        )
+
+        return answer
+
+    except Exception as e:
+
+        print(
+            "AI EXCEPTION:",
+            repr(e)
+        )
+
+        return (
+            "Ҳоло Mateo ба AI пайваст шуда натавонист. "
+            "Каме баъдтар кӯшиш кунед."
+        )
 
 
-def player_answer(player, question):
+# =========================================================
+# RENDER WEB SERVER
+# =========================================================
 
-    q = normalize(question)
+class HealthHandler(BaseHTTPRequestHandler):
 
-    name = player["name"]
-    club = player["club"]
-    league = player["league"]
-    country = player["country"]
-    position = player["position"]
+    def do_GET(self):
 
-    if (
-        "кадом даста" in q
-        or "кадом клуб" in q
-        or "дар кучо бозӣ" in q
+        self.send_response(200)
+
+        self.send_header(
+            "Content-Type",
+            "text/plain; charset=utf-8"
+        )
+
+        self.end_headers()
+
+        self.wfile.write(
+            "Mateo is alive! 🤖".encode(
+                "utf-8"
+            )
+        )
+
+    def log_message(
+        self,
+        format,
+        *args
     ):
-        return f"{name} дар {club} бозӣ мекунад. ⚽"
+        pass
 
-    if "кадом лига" in q:
-        return f"{name} дар {league} бозӣ мекунад. 🏆"
 
-    if (
-        "миллат" in q
-        or "кадом кишвар" in q
-        or "аз кадом кишвар" in q
-    ):
-        return f"{name} аз {country} мебошад. 🌍"
+def run_web_server():
 
-    if (
-        "позиция" in q
-        or "позитсия" in q
-        or "мавкеъ" in q
-    ):
-        return f"Позицияи {name} — {position}. ⚽"
-
-    return (
-        f"👤 Бозигар\n"
-        f"→ Ном: {name}\n"
-        f"→ Клуб: {club}\n"
-        f"→ Лига: {league}\n"
-        f"→ Миллат: {country}\n"
-        f"→ Позиция: {position}"
+    server = HTTPServer(
+        ("0.0.0.0", PORT),
+        HealthHandler
     )
 
-
-# =========================
-# CLUB
-# =========================
-
-def find_club(question):
-
-    q = normalize(question)
-
-    clubs = sorted(
-        CLUBS.items(),
-        key=lambda x: len(normalize(x[0])),
-        reverse=True
+    print(
+        f"Web server started on port {PORT}"
     )
 
-    for key, club in clubs:
-
-        if normalize(key) in q:
-            return club
-
-    return None
+    server.serve_forever()
 
 
-def club_answer(club):
+# =========================================================
+# START
+# =========================================================
 
-    return (
-        f"🏟 {club['name']}\n\n"
-        f"🏆 Лига: {club['league']}\n"
-        f"🌍 Кишвар: {club['country']}"
-    )
-
-
-# =========================
-# /START
-# =========================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     text = (
         "🤖 Салом! Ман Mateo ҳастам.\n\n"
-        "Ман як ёвари зеҳни сунъӣ ҳастам, ки барои "
-        "муошират ва кӯмак ба корбарон сохта шудаам.\n\n"
-        "💬 Ман метавонам ба саволҳо ҷавоб диҳам, "
-        "бо ту суҳбат кунам, матн нависам, тарҷума кунам "
-        "ва ба бисёр масъалаҳо кӯмак расонам.\n\n"
-        "👥 Дар гурӯҳҳо маро бо навиштани "
-        "«Матео» фаъол карда метавонед.\n\n"
+        "Ман як ёвари тоҷикзабон ҳастам, ки "
+        "метавонам бо шумо озодона суҳбат кунам "
+        "ва ба саволҳои шумо ҷавоб диҳам.\n\n"
+        "💬 Дар суҳбат маро бо номи "
+        "«Матео» ё «Mateo» даъват кунед.\n\n"
+        "⚽ Ман инчунин ба мавзӯъҳои футбол, "
+        "бозигарон, клубҳо ва дигар масъалаҳо "
+        "суҳбат карда метавонам.\n\n"
+        "🇹🇯 Забони асосӣ: тоҷикӣ\n"
+        "🇷🇺 Русӣ низ дастгирӣ мешавад.\n\n"
         "👤 Owner: @Maga_unknown\n"
         "🛠️ Created by: @Maga_unknown"
     )
@@ -253,15 +438,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
     )
 
 
-# =========================
-# MESSAGE
-# =========================
+# =========================================================
+# MESSAGE HANDLER
+# =========================================================
 
-async def handle_message(update, context):
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message:
         return
@@ -271,93 +461,148 @@ async def handle_message(update, context):
 
     text = update.message.text.strip()
 
-    # Агар Mateo дар аввал набошад — ҳеҷ ҷавоб намедиҳад
-    question = get_question(text)
+    # =====================================================
+    # IMPORTANT:
+    # Mateo must be anywhere in the message.
+    # If no Mateo -> absolutely no response.
+    # =====================================================
 
-    if question is None:
+    if not has_mateo(text):
         return
 
-    # Танҳо "Матео"
-    if not question.strip():
+    question = remove_mateo(text)
+
+    if not question:
+
         await update.message.reply_text(
             "Салом! Ман Матео ҳастам. 🤖"
         )
+
         return
 
-    # 1. Database answers
-    answer = find_answer(question)
+    # =====================================================
+    # LANGUAGE
+    # =====================================================
 
-    if answer:
-        await update.message.reply_text(answer)
-        return
+    # Агар матн лотинӣ бошад ва ба англисӣ монанд бошад
+    if looks_english(question) and not contains_cyrillic(question):
 
-    # 2. Player
-    player = find_player(question)
-
-    if player:
         await update.message.reply_text(
-            player_answer(player, question)
+            "Ман танҳо забони тоҷикӣ ва русиро мефаҳмам. 🇹🇯🇷🇺"
         )
+
         return
 
-    # 3. Club
-    club = find_club(question)
+    # =====================================================
+    # SPECIAL ANSWERS
+    # =====================================================
 
-    if club:
+    special = special_answer(question)
+
+    if special:
+
         await update.message.reply_text(
-            club_answer(club)
+            special
         )
+
         return
 
-    # 4. Unknown
+    # =====================================================
+    # AI
+    # =====================================================
+
+    user_id = update.effective_user.id
+
+    answer = ask_ai(
+        user_id,
+        question
+    )
+
     await update.message.reply_text(
-        UNKNOWN_ANSWER
+        answer
     )
 
 
-# =========================
+# =========================================================
 # MAIN
-# =========================
+# =========================================================
 
 def main():
 
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN ёфт нашуд! "
-            "Дар Render Environment Variables BOT_TOKEN гузоред."
+            "Дар Render → Environment → "
+            "BOT_TOKEN гузоред."
         )
 
+    if not AI_API_KEY:
+
+        print(
+            "WARNING: AI_API_KEY ёфт нашуд."
+        )
+
+    # Render web server
     threading.Thread(
-        target=run_server,
+        target=run_web_server,
         daemon=True
     ).start()
 
-    app = (
+    application = (
         Application
         .builder()
         .token(BOT_TOKEN)
         .build()
     )
 
-    app.add_handler(
-        CommandHandler("start", start)
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
-    app.add_handler(
+    application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             handle_message
         )
     )
 
-    print("================================")
-    print("MATEO STARTED SUCCESSFULLY")
-    print("AI: OFF")
-    print("DATABASE: ON")
-    print("MATEO PREFIX: ON")
-    print("================================")
+    print(
+        "===================================="
+    )
 
-    app.run_polling(
+    print(
+        "MATEO STARTED SUCCESSFULLY 🤖"
+    )
+
+    print(
+        "FREE CHAT: ON"
+    )
+
+    print(
+        "TAJIK: ON"
+    )
+
+    print(
+        "RUSSIAN: ON"
+    )
+
+    print(
+        "OTHER LANGUAGES: OFF"
+    )
+
+    print(
+        "MATEO NAME REQUIRED: ON"
+    )
+
+    print(
+        "===================================="
+    )
+
+    application.run_polling(
         drop_pending_updates=True
     )
 

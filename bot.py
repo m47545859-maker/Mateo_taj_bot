@@ -12,26 +12,25 @@ from telegram.ext import (
     filters,
 )
 
-from database import ANSWERS
-from players import PLAYERS
-from clubs import CLUBS
+from data import ANSWERS, PLAYERS, CLUBS
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
-OWNER_USERNAME = "Maga_unknown"
+OWNER = "@Maga_unknown"
 OWNER_URL = "https://t.me/Maga_unknown"
 
+
 UNKNOWN_ANSWER = (
-    "Ман ҷавоби саволи шуморо намедонам. "
+    "Ман ҷавоби саволи шуморо намедонам.\n\n"
     "Шумо метавонед ин саволро аз Owner — @Maga_unknown пурсед."
 )
 
 
-# =========================================================
-# RENDER WEB SERVER
-# =========================================================
+# =========================
+# RENDER
+# =========================
 
 class HealthHandler(BaseHTTPRequestHandler):
 
@@ -45,20 +44,18 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 
-def run_web_server():
+def run_server():
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
     server.serve_forever()
 
 
-# =========================================================
-# NORMALIZE TEXT
-# =========================================================
+# =========================
+# NORMALIZE
+# =========================
 
 def normalize(text):
-
     text = text.lower().strip()
 
-    # Tajik / Cyrillic normalization
     replacements = {
         "ё": "е",
         "ӣ": "и",
@@ -72,32 +69,26 @@ def normalize(text):
     for old, new in replacements.items():
         text = text.replace(old, new)
 
-    # Remove punctuation
-    text = re.sub(
-        r"""[!?.,:;'"«»(){}<>/\-–—_+=*#@]+""",
-        " ",
-        text
-    )
+    # Ҳамаи аломатҳо нест мешаванд
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
 
-    # Remove extra spaces
+    # Фосилаҳои зиёдатӣ нест мешаванд
     text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
-# =========================================================
-# MATEO PREFIX
-# =========================================================
+# =========================
+# MATEO MUST BE FIRST
+# =========================
 
-def remove_mateo_prefix(text):
+def get_question(text):
 
     text = text.strip()
 
-    # Mateo must be at the VERY BEGINNING
-    pattern = r"^(матео|mateo)\b"
-
+    # Танҳо агар Mateo/Матео дар аввал бошад
     match = re.match(
-        pattern,
+        r"^(матео|mateo)\b",
         text,
         flags=re.IGNORECASE
     )
@@ -107,19 +98,12 @@ def remove_mateo_prefix(text):
 
     question = text[match.end():].strip()
 
-    # Remove punctuation after Mateo
-    question = re.sub(
-        r"^[!?.,:;«»(){}\-–—]+",
-        "",
-        question
-    )
-
-    return question.strip()
+    return question
 
 
-# =========================================================
-# FIND NORMAL ANSWER
-# =========================================================
+# =========================
+# ANSWER FROM DATABASE
+# =========================
 
 def find_answer(question):
 
@@ -128,52 +112,41 @@ def find_answer(question):
     if not q:
         return None
 
-    # Exact match
+    # Аввал ҷавоби аниқ
     if q in ANSWERS:
         return ANSWERS[q]
 
-    # Compare normalized keys
+    # Баъд муқоисаи normalizeшуда
     for key, answer in ANSWERS.items():
 
-        normalized_key = normalize(key)
-
-        if q == normalized_key:
+        if normalize(key) == q:
             return answer
 
     return None
 
 
-# =========================================================
-# FIND PLAYER
-# =========================================================
+# =========================
+# PLAYER
+# =========================
 
 def find_player(question):
 
     q = normalize(question)
 
-    if not q:
-        return None
-
-    # Longest names first
-    sorted_players = sorted(
+    # Номи дарозтар аввал санҷида мешавад
+    players = sorted(
         PLAYERS.items(),
-        key=lambda item: len(normalize(item[0])),
+        key=lambda x: len(normalize(x[0])),
         reverse=True
     )
 
-    for key, player in sorted_players:
+    for key, player in players:
 
-        player_key = normalize(key)
-
-        if player_key in q:
+        if normalize(key) in q:
             return player
 
     return None
 
-
-# =========================================================
-# PLAYER ANSWER
-# =========================================================
 
 def player_answer(player, question):
 
@@ -185,84 +158,61 @@ def player_answer(player, question):
     country = player["country"]
     position = player["position"]
 
-    # Club
     if (
         "кадом даста" in q
         or "кадом клуб" in q
         or "дар кучо бозӣ" in q
-        or "дар кучо бозии" in q
     ):
-        return (
-            f"{name} дар клуби {club} бозӣ мекунад. ⚽"
-        )
+        return f"{name} дар {club} бозӣ мекунад. ⚽"
 
-    # League
     if "кадом лига" in q:
-        return (
-            f"{name} дар {league} бозӣ мекунад. 🏆"
-        )
+        return f"{name} дар {league} бозӣ мекунад. 🏆"
 
-    # Country
     if (
-        "аз кадом кишвар" in q
+        "миллат" in q
         or "кадом кишвар" in q
-        or "аз кучо" in q
-        or "миллат" in q
+        or "аз кадом кишвар" in q
     ):
-        return (
-            f"{name} аз {country} мебошад. 🌍"
-        )
+        return f"{name} аз {country} мебошад. 🌍"
 
-    # Position
     if (
         "позиция" in q
         or "позитсия" in q
-        or "дар кадом мавкеъ" in q
+        or "мавкеъ" in q
     ):
-        return (
-            f"Позицияи {name} — {position}. ⚽"
-        )
+        return f"Позицияи {name} — {position}. ⚽"
 
-    # Full player information
     return (
-        f"👤 {name}\n\n"
-        f"🏟 Клуб: {club}\n"
-        f"🏆 Лига: {league}\n"
-        f"🌍 Миллат: {country}\n"
-        f"⚽ Позиция: {position}"
+        f"👤 Бозигар\n"
+        f"→ Ном: {name}\n"
+        f"→ Клуб: {club}\n"
+        f"→ Лига: {league}\n"
+        f"→ Миллат: {country}\n"
+        f"→ Позиция: {position}"
     )
 
 
-# =========================================================
-# FIND CLUB
-# =========================================================
+# =========================
+# CLUB
+# =========================
 
 def find_club(question):
 
     q = normalize(question)
 
-    if not q:
-        return None
-
-    sorted_clubs = sorted(
+    clubs = sorted(
         CLUBS.items(),
-        key=lambda item: len(normalize(item[0])),
+        key=lambda x: len(normalize(x[0])),
         reverse=True
     )
 
-    for key, club in sorted_clubs:
+    for key, club in clubs:
 
-        club_key = normalize(key)
-
-        if club_key in q:
+        if normalize(key) in q:
             return club
 
     return None
 
-
-# =========================================================
-# CLUB ANSWER
-# =========================================================
 
 def club_answer(club):
 
@@ -273,14 +223,11 @@ def club_answer(club):
     )
 
 
-# =========================================================
-# START
-# =========================================================
+# =========================
+# /START
+# =========================
 
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "🤖 Салом! Ман Mateo ҳастам.\n\n"
@@ -310,14 +257,11 @@ async def start(
     )
 
 
-# =========================================================
-# MATEO MESSAGE
-# =========================================================
+# =========================
+# MESSAGE
+# =========================
 
-async def mateo_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def handle_message(update, context):
 
     if not update.message:
         return
@@ -327,5 +271,96 @@ async def mateo_message(
 
     text = update.message.text.strip()
 
-    # Mateo MUST be at the beginning
-    question = remove_mateo_prefix(text)
+    # Агар Mateo дар аввал набошад — ҳеҷ ҷавоб намедиҳад
+    question = get_question(text)
+
+    if question is None:
+        return
+
+    # Танҳо "Матео"
+    if not question.strip():
+        await update.message.reply_text(
+            "Салом! Ман Матео ҳастам. 🤖"
+        )
+        return
+
+    # 1. Database answers
+    answer = find_answer(question)
+
+    if answer:
+        await update.message.reply_text(answer)
+        return
+
+    # 2. Player
+    player = find_player(question)
+
+    if player:
+        await update.message.reply_text(
+            player_answer(player, question)
+        )
+        return
+
+    # 3. Club
+    club = find_club(question)
+
+    if club:
+        await update.message.reply_text(
+            club_answer(club)
+        )
+        return
+
+    # 4. Unknown
+    await update.message.reply_text(
+        UNKNOWN_ANSWER
+    )
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+
+    if not BOT_TOKEN:
+        raise RuntimeError(
+            "BOT_TOKEN ёфт нашуд! "
+            "Дар Render Environment Variables BOT_TOKEN гузоред."
+        )
+
+    threading.Thread(
+        target=run_server,
+        daemon=True
+    ).start()
+
+    app = (
+        Application
+        .builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    app.add_handler(
+        CommandHandler("start", start)
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_message
+        )
+    )
+
+    print("================================")
+    print("MATEO STARTED SUCCESSFULLY")
+    print("AI: OFF")
+    print("DATABASE: ON")
+    print("MATEO PREFIX: ON")
+    print("================================")
+
+    app.run_polling(
+        drop_pending_updates=True
+    )
+
+
+if __name__ == "__main__":
+    main()
